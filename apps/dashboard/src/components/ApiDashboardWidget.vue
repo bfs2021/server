@@ -14,18 +14,20 @@
 			<ApiDashboardWidgetItem :item="item" :iconSize="iconSize" :roundedIcons="widget.item_icons_round" />
 		</template>
 		<template #empty-content>
-			<NcEmptyContent
-				v-if="items.length === 0"
-				:description="emptyContentMessage">
-				<template #icon>
-					<CheckIcon v-if="emptyContentMessage" :size="65" />
-				</template>
-				<template #action>
-					<NcButton v-if="setupButton" :href="setupButton.link">
-						{{ setupButton.text }}
-					</NcButton>
-				</template>
-			</NcEmptyContent>
+			<slot name="emptyContent">
+				<NcEmptyContent
+					v-if="items.length === 0"
+					:description="emptyContentMessage">
+					<template #icon>
+						<CheckIcon v-if="emptyContentMessage" :size="65" />
+					</template>
+					<template #action>
+						<NcButton v-if="setupButton" :href="setupButton.link">
+							{{ setupButton.text }}
+						</NcButton>
+					</template>
+				</NcEmptyContent>
+			</slot>
 		</template>
 	</NcDashboardWidget>
 </template>
@@ -62,6 +64,11 @@ export default {
 			type: Boolean,
 			required: true,
 		},
+
+		hideMoreButton: {
+			type: Boolean,
+			default: false,
+		},
 	},
 
 	data() {
@@ -96,7 +103,7 @@ export default {
 
 		/** @return {object|undefined} */
 		moreButton() {
-			return this.widget?.buttons?.find((button) => button.type === 'more')
+			return this.hideMoreButton ? undefined : this.widget?.buttons?.find((button) => button.type === 'more')
 		},
 
 		/** @return {object|undefined} */

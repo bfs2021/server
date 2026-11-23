@@ -140,4 +140,46 @@ describe('DashboardApp.vue', () => {
 			layout: ['third', 'first', 'second'],
 		})
 	})
+
+	it('auto-saves changes from the shared picker on the personal dashboard', async () => {
+		render(DashboardApp)
+		await flushPromises()
+		await fireEvent.click(screen.getByRole('button', { name: 'Customize' }))
+		await fireEvent.click(await screen.findByRole('checkbox', { name: 'Second widget' }))
+
+		expect(axios.post).toHaveBeenCalledOnce()
+		expect(axios.post).toHaveBeenCalledWith(expect.stringContaining('/apps/dashboard/api/v3/layout'), {
+			layout: ['first', 'third'],
+		})
+	})
+
+	it('batches personal API widgets and refreshes only the ones that are due', async () => {
+		vi.useFakeTimers()
+		const hidden = vi.spyOn(document, 'hidden', 'get').mockReturnValue(false)
+		try {
+			vi.mocked(axios.get).mockResolvedValueOnce({ data: { ocs: { data: {
+				first: { id: 'first', title: 'First widget', item_api_versions: [2], reload_interval: 5 },
+				second: { id: 'second', title: 'Second widget', item_api_versions: [2], reload_interval: 0 },
+				third: { id: 'third', title: 'Third widget', item_api_versions: [1], reload_interval: 5 },
+			} } } })
+			const { unmount } = render(DashboardApp)
+			await flushPromises()
+			expect(axios.get).toHaveBeenNthCalledWith(2, expect.stringContaining('/apps/dashboard/api/v2/widget-items'), {
+				params: { widgets: ['first', 'second'] },
+				signal: expect.any(AbortSignal),
+			})
+
+			await vi.advanceTimersByTimeAsync(5000)
+			expect(axios.get).toHaveBeenNthCalledWith(3, expect.stringContaining('/apps/dashboard/api/v2/widget-items'), {
+				params: { widgets: ['first'] },
+				signal: expect.any(AbortSignal),
+			})
+			unmount()
+			await vi.advanceTimersByTimeAsync(5000)
+			expect(axios.get).toHaveBeenCalledTimes(3)
+		} finally {
+			hidden.mockRestore()
+			vi.useRealTimers()
+		}
+	})
 })

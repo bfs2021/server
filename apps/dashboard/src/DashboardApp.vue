@@ -62,34 +62,41 @@
 			<div class="modal__content">
 				<h2>{{ t('dashboard', 'Edit widgets') }}</h2>
 				<ol class="panels">
-					<li v-for="status in sortedAllStatuses" :key="status" :class="'panel-' + status">
-						<input
-							:id="'status-checkbox-' + status"
-							type="checkbox"
-							class="checkbox"
-							:checked="isStatusActive(status)"
-							@input="updateStatusCheckbox(status, $event.target.checked)">
-						<label :for="'status-checkbox-' + status">
-							<NcUserStatusIcon v-if="status === 'status'" status="online" aria-hidden="true" />
-							<span v-else :class="statusInfo[status].icon" aria-hidden="true" />
-							{{ statusInfo[status].text }}
-						</label>
-					</li>
+					<DashboardWidgetChoice
+						v-for="status in sortedAllStatuses"
+						:id="'status-checkbox-' + status"
+						:key="status"
+						:class="'panel-' + status"
+						:selected="isStatusActive(status)"
+						@change="updateStatusCheckbox(status, $event)">
+						<template #icon>
+							<NcUserStatusIcon
+								v-if="status === 'status'"
+								class="widget-choice__status"
+								status="online"
+								aria-hidden="true" />
+							<span
+								v-else
+								class="widget-choice__status"
+								:class="statusInfo[status].icon"
+								aria-hidden="true" />
+						</template>
+						{{ statusInfo[status].text }}
+					</DashboardWidgetChoice>
 				</ol>
 				<ol ref="modalPanelsElement" class="panels">
-					<li v-for="panel in modalPanelList" :key="panel.id" :class="'panel-' + panel.id">
-						<input
-							:id="'panel-checkbox-' + panel.id"
-							type="checkbox"
-							class="checkbox"
-							:checked="isActive(panel)"
-							@input="updateCheckbox(panel, $event.target.checked)">
-						<label :for="'panel-checkbox-' + panel.id" :class="{ draggable: isActive(panel) }">
-							<img v-if="panel.iconUrl" alt="" :src="panel.iconUrl">
-							<span v-else :class="panel.iconClass" aria-hidden="true" />
-							{{ panel.title }}
-						</label>
-					</li>
+					<DashboardWidgetChoice
+						v-for="panel in modalPanelList"
+						:id="'panel-checkbox-' + panel.id"
+						:key="panel.id"
+						:class="'panel-' + panel.id"
+						:selected="isActive(panel)"
+						:iconUrl="panel.iconUrl"
+						:iconClass="panel.iconClass"
+						sortable
+						@change="updateCheckbox(panel, $event)">
+						{{ panel.title }}
+					</DashboardWidgetChoice>
 				</ol>
 				<a v-if="isAdmin && appStoreEnabled" :href="appStoreUrl" class="button">{{ t('dashboard', 'Get more widgets from the App Store') }}</a>
 
@@ -123,8 +130,10 @@ import NcModal from '@nextcloud/vue/components/NcModal'
 import NcUserStatusIcon from '@nextcloud/vue/components/NcUserStatusIcon'
 import Pencil from 'vue-material-design-icons/Pencil.vue'
 import ApiDashboardWidget from './components/ApiDashboardWidget.vue'
+import DashboardWidgetChoice from './components/DashboardWidgetChoice.vue'
 import { logger } from './logger.ts'
 import isMobile from './mixins/isMobile.js'
+import { useDashboardWidgets } from './useDashboardWidgets.ts'
 
 const panels = loadState('dashboard', 'panels')
 const firstRun = loadState('dashboard', 'firstRun')
@@ -144,6 +153,7 @@ export default {
 	name: 'DashboardApp',
 	components: {
 		ApiDashboardWidget,
+		DashboardWidgetChoice,
 		NcButton,
 		NcModal,
 		Pencil,
@@ -156,6 +166,7 @@ export default {
 
 	setup() {
 		const layout = ref(loadState('dashboard', 'layout').filter((panelId) => panels[panelId]))
+		const { widgets, items, loading, reload, refresh } = useDashboardWidgets({ widgetIds: () => layout.value })
 		const modalPanelList = ref([])
 		const isModalDragging = ref(false)
 
@@ -214,6 +225,11 @@ export default {
 			panelsElement,
 			modalPanelsElement,
 			saveLayout,
+			apiWidgets: widgets,
+			apiWidgetItems: items,
+			loadingItems: loading,
+			loadApiWidgets: reload,
+			refreshApiItems: refresh,
 		}
 	},
 
@@ -235,9 +251,6 @@ export default {
 			appStoreUrl: generateUrl('/settings/apps/dashboard'),
 			appStoreEnabled: loadState('dashboard', 'appStoreEnabled', true),
 			statuses: {},
-			apiWidgets: [],
-			apiWidgetItems: {},
-			loadingItems: true,
 			birthdate,
 		}
 	},
@@ -327,26 +340,7 @@ export default {
 	},
 
 	async created() {
-		await this.fetchApiWidgets()
-
-		const apiWidgetIdsToFetch = Object
-			.values(this.apiWidgets)
-			.filter((widget) => this.isApiWidgetV2(widget.id) && this.layout.includes(widget.id))
-			.map((widget) => widget.id)
-		await Promise.all(apiWidgetIdsToFetch.map((id) => this.fetchApiWidgetItems([id], true)))
-
-		for (const widget of Object.values(this.apiWidgets)) {
-			if (widget.reload_interval > 0) {
-				setInterval(async () => {
-					if (!this.layout.includes(widget.id)) {
-						return
-					}
-
-					await this.fetchApiWidgetItems([widget.id], true)
-				}, widget.reload_interval * 1000)
-			}
-		}
-
+		await this.loadApiWidgets()
 		this.$nextTick(() => this.rerenderPanels())
 	},
 
@@ -473,7 +467,7 @@ export default {
 			} else {
 				this.layout.push(panel.id)
 				if (this.isApiWidgetV2(panel.id)) {
-					this.fetchApiWidgetItems([panel.id], true)
+					void this.refreshApiItems([panel.id])
 				}
 			}
 			this.panels[panel.id].mounted = false
@@ -538,34 +532,8 @@ export default {
 			}
 		},
 
-		async fetchApiWidgets() {
-			const { data } = await axios.get(generateOcsUrl('/apps/dashboard/api/v1/widgets'))
-			this.apiWidgets = data.ocs.data
-		},
-
-		async fetchApiWidgetItems(widgetIds, merge = false) {
-			try {
-				const url = generateOcsUrl('/apps/dashboard/api/v2/widget-items')
-				const params = new URLSearchParams(widgetIds.map((id) => ['widgets[]', id]))
-				const response = await axios.get(`${url}?${params.toString()}`)
-				const widgetItems = response.data.ocs.data
-				if (merge) {
-					this.apiWidgetItems = { ...this.apiWidgetItems, ...widgetItems }
-				} else {
-					this.apiWidgetItems = widgetItems
-				}
-			} finally {
-				this.loadingItems = false
-			}
-		},
-
 		isApiWidgetV2(id) {
-			for (const widget of Object.values(this.apiWidgets)) {
-				if (widget.id === id && widget.item_api_versions.includes(2)) {
-					return true
-				}
-			}
-			return false
+			return this.apiWidgets[id]?.item_api_versions?.includes(2) ?? false
 		},
 	},
 }
@@ -751,55 +719,6 @@ export default {
 		list-style-type: none;
 		padding-bottom: 16px;
 	}
-	li {
-		label {
-			position: relative;
-			display: block;
-			padding: 48px 16px 14px 16px;
-			margin: 8px;
-			width: 140px;
-			background-color: var(--color-background-hover);
-			border: 2px solid var(--color-main-background);
-			border-radius: var(--border-radius-large);
-			text-align: start;
-			overflow: hidden;
-			text-overflow: ellipsis;
-			white-space: nowrap;
-
-			img,
-			span {
-				position: absolute;
-				top: 16px;
-				width: 24px;
-				height: 24px;
-				background-size: 24px;
-			}
-
-			img {
-				filter: var(--background-invert-if-dark);
-			}
-
-			&:hover {
-				border-color: var(--color-primary-element);
-			}
-		}
-
-		// Do not invert status icons
-		&:not(.panel-status) label span {
-			filter: var(--background-invert-if-dark);
-		}
-
-		input[type='checkbox'].checkbox + label:before {
-			position: absolute;
-			inset-inline-end: 12px;
-			top: 16px;
-		}
-
-		input:focus + label {
-			border-color: var(--color-primary-element);
-		}
-	}
-
 	h2 {
 		font-weight: bold;
 		margin-top: 12px;

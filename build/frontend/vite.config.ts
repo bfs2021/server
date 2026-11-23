@@ -37,6 +37,7 @@ const modules = {
 	},
 	dashboard: {
 		main: resolve(import.meta.dirname, 'apps/dashboard/src', 'main.js'),
+		'team-dashboard': resolve(import.meta.dirname, 'apps/dashboard/src', 'team-dashboard.ts'),
 	},
 	dav: {
 		'settings-admin-caldav': resolve(import.meta.dirname, 'apps/dav/src', 'settings-admin.ts'),
